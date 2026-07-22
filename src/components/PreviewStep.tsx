@@ -1,6 +1,18 @@
-import { useState, useEffect } from 'react';
-import { Eye, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
-import type { TemplateField, DataRecord } from '../types';
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+} from 'react';
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  FileText,
+  Loader2,
+} from 'lucide-react';
+import type { DataRecord, TemplateField } from '../types';
 import { generateMergedPDF } from '../utils/pdfUtils';
 
 interface PreviewStepProps {
@@ -10,6 +22,10 @@ interface PreviewStepProps {
   headers: string[];
   onNext: () => void;
   onBack: () => void;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 export default function PreviewStep({
@@ -24,177 +40,248 @@ export default function PreviewStep({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+
+  const record = records[currentRecord] ?? {};
+  const mappedValues = useMemo(
+    () =>
+      fields.map((field) => ({
+        field,
+        value: String(record[field.name] ?? ''),
+      })),
+    [fields, record],
+  );
 
   useEffect(() => {
-    generatePreview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRecord]);
-
-  const generatePreview = async () => {
     if (!pdfBytes || records.length === 0) return;
 
-    setIsGenerating(true);
-    setError(null);
+    let active = true;
+    let createdUrl: string | null = null;
 
-    try {
-      const mergedPdf = await generateMergedPDF(pdfBytes, fields, records[currentRecord]);
-      const blob = new Blob([mergedPdf.buffer as ArrayBuffer], { type: 'application/pdf' });
-      
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-      }
-      
-      const url = URL.createObjectURL(blob);
-      setPreviewUrl(url);
-    } catch (err) {
-      setError(`Failed to generate preview: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
+    const generatePreview = async () => {
+      setIsGenerating(true);
+      setError(null);
+      setPreviewUrl(null);
 
-  useEffect(() => {
-    return () => {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
+      try {
+        const mergedPdf = await generateMergedPDF(
+          pdfBytes,
+          fields,
+          records[currentRecord],
+        );
+        if (!active) return;
+
+        const blob = new Blob([mergedPdf.buffer as ArrayBuffer], {
+          type: 'application/pdf',
+        });
+        createdUrl = URL.createObjectURL(blob);
+        setPreviewUrl(createdUrl);
+      } catch (caughtError) {
+        if (!active) return;
+        setError(
+          `Failed to generate preview: ${
+            caughtError instanceof Error ? caughtError.message : 'Unknown error'
+          }`,
+        );
+      } finally {
+        if (active) setIsGenerating(false);
       }
     };
-  }, [previewUrl]);
 
-  const record = records[currentRecord];
+    void generatePreview();
+
+    return () => {
+      active = false;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [currentRecord, fields, pdfBytes, previewAttempt, records]);
+
+  const moveToRecord = (recordNumber: number) => {
+    setCurrentRecord(clamp(recordNumber - 1, 0, records.length - 1));
+  };
 
   return (
-    <div className="max-w-6xl mx-auto animate-fadeIn">
-      <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold text-gray-800 mb-3">Preview Merged PDFs</h2>
-        <p className="text-gray-500 text-lg">
-          Review how your merged documents will look before generating all of them.
+    <section className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mb-6 text-center">
+        <h1 className="text-3xl font-bold tracking-tight text-slate-800 sm:text-4xl">
+          Preview the Mail Merge
+        </h1>
+        <p className="mx-auto mt-3 max-w-3xl text-base text-slate-500 sm:text-lg">
+          Check a real spreadsheet row inside the PDF before choosing how many
+          documents to generate.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Record Navigator */}
-        <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <h3 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
-              <Eye size={18} className="text-indigo-600" />
-              Record {currentRecord + 1} of {records.length}
-            </h3>
+      <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+        <div className="flex gap-3">
+          <Eye className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
+          <div>
+            <p className="font-semibold">This is a mail merge, not a simple file join.</p>
+            <p className="mt-1 leading-6 text-blue-800">
+              Each selected spreadsheet row creates one personalised copy of the
+              PDF template. You have {records.length.toLocaleString()} data rows,
+              but the next step will default to one test PDF and let you choose a
+              safe row range.
+            </p>
+          </div>
+        </div>
+      </div>
 
-            <div className="flex items-center gap-2 mb-4">
+      <div className="grid items-start gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className="space-y-4 xl:sticky xl:top-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-800">
+              <Eye className="h-5 w-5 text-indigo-600" />
+              Preview Record
+            </h2>
+
+            <div className="mt-4 flex items-center gap-2">
               <button
-                onClick={() => setCurrentRecord(Math.max(0, currentRecord - 1))}
+                type="button"
+                onClick={() => moveToRecord(currentRecord)}
                 disabled={currentRecord === 0}
-                className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                className="rounded-lg border border-slate-200 p-2 text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                aria-label="Previous record"
               >
-                <ChevronLeft size={18} />
+                <ChevronLeft className="h-5 w-5" />
               </button>
-              <div className="flex-1">
-                <input
-                  type="range"
-                  min={0}
-                  max={records.length - 1}
-                  value={currentRecord}
-                  onChange={(e) => setCurrentRecord(Number(e.target.value))}
-                  className="w-full accent-indigo-600"
-                />
-              </div>
-              <button
-                onClick={() => setCurrentRecord(Math.min(records.length - 1, currentRecord + 1))}
-                disabled={currentRecord === records.length - 1}
-                className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </div>
 
-            <div className="space-y-2">
-              {headers.map((header) => (
-                <div key={header} className="flex justify-between text-sm">
-                  <span className="text-gray-500 font-medium truncate mr-2">{header}:</span>
-                  <span className="text-gray-800 font-semibold truncate text-right">
-                    {record?.[header] || <span className="text-gray-300 italic">empty</span>}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <h3 className="font-semibold text-gray-700 mb-3">Field Mappings</h3>
-            <div className="space-y-2">
-              {fields.map((field, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center gap-2 text-sm bg-gray-50 rounded-lg px-3 py-2"
-                >
-                  <div
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: field.color }}
+              <label className="min-w-0 flex-1 text-sm text-slate-600">
+                <span className="sr-only">Record number</span>
+                <div className="flex items-center rounded-lg border border-slate-300 bg-white px-3">
+                  <span className="shrink-0 text-slate-400">Record</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={records.length}
+                    value={currentRecord + 1}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                      moveToRecord(Number(event.target.value))
+                    }
+                    className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-center font-semibold text-slate-800 outline-none"
                   />
-                  <span className="font-medium text-gray-700">{field.name}</span>
-                  <span className="text-gray-400 text-xs ml-auto">
-                    P{field.page} ({field.x}, {field.y})
+                  <span className="shrink-0 text-slate-400">
+                    of {records.length.toLocaleString()}
                   </span>
+                </div>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => moveToRecord(currentRecord + 2)}
+                disabled={currentRecord === records.length - 1}
+                className="rounded-lg border border-slate-200 p-2 text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                aria-label="Next record"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-lg bg-slate-50 px-3 py-2">
+                <span className="block text-xs text-slate-400">Mapped fields</span>
+                <strong className="text-slate-800">{fields.length}</strong>
+              </div>
+              <div className="rounded-lg bg-slate-50 px-3 py-2">
+                <span className="block text-xs text-slate-400">Data columns</span>
+                <strong className="text-slate-800">{headers.length}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-800">Inserted Values</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Only these mapped fields are added to this PDF copy.
+            </p>
+
+            <div className="mt-4 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
+              {mappedValues.map(({ field, value }, index) => (
+                <div
+                  key={`${field.name}-${index}`}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate text-sm font-semibold text-slate-700">
+                      {field.name}
+                    </span>
+                    <span className="shrink-0 text-xs text-slate-400">
+                      P{field.page} · {field.x},{field.y}
+                    </span>
+                  </div>
+                  <p className="mt-1 break-words text-sm text-slate-600">
+                    {value || <span className="italic text-slate-400">Empty</span>}
+                  </p>
                 </div>
               ))}
             </div>
           </div>
-        </div>
+        </aside>
 
-        {/* PDF Preview */}
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-            <div className="px-5 py-3 bg-gray-50 border-b flex items-center gap-2">
-              <FileText size={16} className="text-indigo-600" />
-              <span className="font-semibold text-gray-700 text-sm">PDF Preview</span>
-              {isGenerating && (
-                <span className="ml-auto text-xs text-indigo-500 animate-pulse">Generating...</span>
-              )}
-            </div>
-            <div className="aspect-[8.5/11] bg-gray-100 relative">
-              {error ? (
-                <div className="absolute inset-0 flex items-center justify-center p-8">
-                  <div className="text-center">
-                    <p className="text-red-500 font-medium">{error}</p>
-                    <button
-                      onClick={generatePreview}
-                      className="mt-3 text-sm text-indigo-600 hover:text-indigo-800"
-                    >
-                      Try again
-                    </button>
-                  </div>
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
+            <h2 className="flex items-center gap-2 font-semibold text-slate-800">
+              <FileText className="h-5 w-5 text-indigo-600" />
+              Merged PDF Preview
+            </h2>
+            {isGenerating && (
+              <span className="flex items-center gap-2 text-sm text-indigo-600">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Updating…
+              </span>
+            )}
+          </div>
+
+          <div className="min-h-[72vh] bg-slate-200 p-3 sm:p-5">
+            {error ? (
+              <div className="flex min-h-[66vh] items-center justify-center rounded-xl bg-white p-8 text-center">
+                <div className="max-w-xl">
+                  <AlertTriangle className="mx-auto h-10 w-10 text-red-500" />
+                  <p className="mt-4 font-semibold text-red-600">{error}</p>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewAttempt((value) => value + 1)}
+                    className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-700"
+                  >
+                    Try again
+                  </button>
                 </div>
-              ) : previewUrl ? (
-                <iframe
-                  src={previewUrl}
-                  className="w-full h-full border-0"
-                  title="PDF Preview"
-                />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="animate-spin w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full" />
+              </div>
+            ) : previewUrl ? (
+              <iframe
+                title={`Merged PDF preview for record ${currentRecord + 1}`}
+                src={`${previewUrl}#toolbar=0&navpanes=0&view=FitH`}
+                className="h-[72vh] w-full rounded-xl border-0 bg-white shadow-inner"
+              />
+            ) : (
+              <div className="flex min-h-[66vh] items-center justify-center rounded-xl bg-white text-slate-500">
+                <div className="text-center">
+                  <Loader2 className="mx-auto h-8 w-8 animate-spin text-indigo-600" />
+                  <p className="mt-3">Generating the merged preview…</p>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      <div className="mt-8 flex justify-between">
+      <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
         <button
+          type="button"
           onClick={onBack}
-          className="px-6 py-3 rounded-xl font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-all"
+          className="rounded-xl border border-slate-300 bg-white px-6 py-3 font-medium text-slate-700 transition hover:bg-slate-50"
         >
-          ← Back
+          ← Back to Mapping
         </button>
         <button
+          type="button"
           onClick={onNext}
-          className="px-8 py-3 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition-all duration-300"
+          disabled={Boolean(error) || isGenerating || !previewUrl}
+          className="rounded-xl bg-indigo-600 px-6 py-3 font-semibold text-white shadow-lg shadow-indigo-200 transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
         >
-          Generate All →
+          Choose Records & Generate →
         </button>
       </div>
-    </div>
+    </section>
   );
 }
